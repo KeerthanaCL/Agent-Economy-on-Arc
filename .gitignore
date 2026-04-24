@@ -1,6 +1,16 @@
+# Secrets
 .env
 .env.local
 .env.*.local
+wallets.json
+recovery_file*
+*entity-secret-recovery*
+*.pem
+.streamlit/secrets.toml
+
+# Runtime data
+tx_log.jsonl
+*.log
 
 # Python
 __pycache__/
@@ -8,23 +18,15 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-.streamlit/secrets.toml
 
 # Node
 node_modules/
 dist/
 build/
 *.tsbuildinfo
+.tsx/
 
-# Runtime data
-wallets.json
-tx_log.jsonl
-*.log
-
-# Circle entity-secret recovery files (downloaded from console)
-recovery_file*
-*entity-secret-recovery*
-*.pem
-
+# OS
 .DS_Store
 Thumbs.db
+desktop.ini

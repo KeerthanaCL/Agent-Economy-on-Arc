@@ -78,9 +78,11 @@ with right:
         for tx in reversed(txs[-50:]):
             tx_hash = tx.get("tx_hash", "")
             link = f"[{tx_hash[:10]}…]({ARC_EXPLORER}{tx_hash})" if tx_hash else "(pending)"
+            caller = tx.get("caller", "research")
+            badge = "🤖→🔬" if caller == "analyst" else "👤→🤖"
             st.markdown(
-                f"**{tx['ts']}** · `{tx['path']}` · **{tx['price']}** · {link}  \n"
-                f"<span style='color:#888'>params: {tx.get('params', {})}</span>",
+                f"{badge} **{tx['ts']}** · `{tx['path']}` · **{tx['price']}** · {link}  \n"
+                f"<span style='color:#888'>caller: {caller} · params: {tx.get('params', {})}</span>",
                 unsafe_allow_html=True,
             )
 
