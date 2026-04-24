@@ -10,6 +10,7 @@ recovery_file*
 
 # Runtime data
 tx_log.jsonl
+trust.json
 *.log
 
 # Python

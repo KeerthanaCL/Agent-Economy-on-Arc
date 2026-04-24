@@ -1,10 +1,10 @@
 """Streamlit UI for Agent Research Desk.
 
-Left: chat with the Gemini-powered agent (running in agent-ts/ as a TS service).
-Right: live transaction log showing every on-chain USDC payment on Arc testnet.
+Left:  chat with the research agent (running in agent-ts/ on :9000).
+Right: live transaction log + budget + trust score table.
 
-The TS agent handles Gemini function calling + Circle Gateway nanopayments.
-Streamlit just POSTs questions to it and reads the shared tx_log.jsonl.
+All the business logic lives in the three TS services; Streamlit just posts
+questions and reads shared state (tx_log.jsonl, trust.json).
 """
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 AGENT_URL = os.environ.get("AGENT_URL", "http://localhost:9000")
-TX_LOG_PATH = Path(__file__).resolve().parent / "tx_log.jsonl"
+ROOT = Path(__file__).resolve().parent
+TX_LOG_PATH = ROOT / "tx_log.jsonl"
+TRUST_PATH = ROOT / "trust.json"
 ARC_EXPLORER = "https://explorer.testnet.arc.network/tx/"
 
 st.set_page_config(page_title="Agent Research Desk — Arc", layout="wide")
@@ -35,6 +37,15 @@ def load_tx_log() -> list[dict]:
         except Exception:
             continue
     return out
+
+
+def load_trust() -> dict[str, dict]:
+    if not TRUST_PATH.exists():
+        return {}
+    try:
+        return json.loads(TRUST_PATH.read_text())
+    except Exception:
+        return {}
 
 
 def total_spend(txs: list[dict]) -> float:
@@ -54,24 +65,56 @@ def ask_agent(question: str) -> dict:
     return r.json()
 
 
-# --- Layout ---
+def trust_color(score: int) -> str:
+    if score >= 90:
+        return "🟢"
+    if score >= 70:
+        return "🟡"
+    return "🔴"
+
+
+# ───────── Layout ─────────────────────────────────────────────────────────
 
 st.title("Agent Research Desk")
-st.caption("Gemini agent that pays per API call in USDC on Arc testnet via Circle Gateway nanopayments.")
+st.caption(
+    "Cross-provider agent economy on Arc testnet. Research agent (GPT-4o-mini) "
+    "pays Analyst agent (Gemini 2.5 Flash) $0.02 per synthesis; analyst pays "
+    "$0.008 to raw APIs. All settled in USDC via Circle Gateway nanopayments."
+)
 
 left, right = st.columns([0.6, 0.4], gap="large")
 
-with right:
-    st.subheader("On-chain payment log")
+# ───────── Right column: tx log + trust + totals ──────────────────────────
 
+with right:
     txs = load_tx_log()
+    trust = load_trust()
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Payments", len(txs))
     c2.metric("USDC spent", f"${total_spend(txs):.4f}")
     c3.metric("Network", "Arc testnet")
 
-    st.caption("Every paid API call settles as a USDC nanopayment on Arc via Circle Gateway (x402).")
+    st.subheader("Trust scores")
+    if not trust:
+        st.info("No trust data yet. Ask the agent something to populate.")
+    else:
+        rows = []
+        for path, entry in sorted(trust.items()):
+            rows.append({
+                "endpoint": path,
+                "score": f"{trust_color(entry['score'])} {entry['score']}/100",
+                "calls": entry["calls"],
+                "viol": entry["violations"],
+            })
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.caption(
+            "Each paid response is sanity-checked (e.g. `/price` must be in "
+            "$0.01–$1M; `/sentiment` in [-1,1]). Violations drop that "
+            "endpoint's score by 10; clean calls slowly rebuild it."
+        )
 
+    st.subheader("On-chain payment log")
     if not txs:
         st.info("No payments yet. Ask the agent a question to start.")
     else:
@@ -86,6 +129,8 @@ with right:
                 unsafe_allow_html=True,
             )
 
+# ───────── Left column: chat ──────────────────────────────────────────────
+
 with left:
     st.subheader("Ask the agent")
 
@@ -95,11 +140,21 @@ with left:
     for msg in st.session_state.chat:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+            if msg.get("spend"):
+                s = msg["spend"]
+                pct = min(s.get("pct", 0) / 100.0, 1.0)
+                label = (
+                    f"Spend: ${s['total_usd']:.4f} / ${s['budget_usd']:.3f} "
+                    f"({s['pct']:.1f}%)"
+                )
+                if s.get("exhausted"):
+                    label += " ⚠️ budget exhausted — agent skipped some tools"
+                st.progress(pct, text=label)
             if msg.get("tool_calls"):
                 with st.expander(f"Tool calls ({len(msg['tool_calls'])})"):
                     st.json(msg["tool_calls"])
 
-    question = st.chat_input("e.g. What's the latest on ETH — price, sentiment, and news?")
+    question = st.chat_input("e.g. Give me a full analyst report on ETH with a rating.")
     if question:
         st.session_state.chat.append({"role": "user", "content": question})
         with st.chat_message("user"):
@@ -111,14 +166,27 @@ with left:
                     result = ask_agent(question)
                     answer = result.get("answer", "")
                     tool_calls = result.get("toolCalls", [])
+                    spend = result.get("spend", {})
+
                     st.markdown(answer)
+                    if spend:
+                        pct = min(spend.get("pct", 0) / 100.0, 1.0)
+                        label = (
+                            f"Spend: ${spend['total_usd']:.4f} / "
+                            f"${spend['budget_usd']:.3f} ({spend['pct']:.1f}%)"
+                        )
+                        if spend.get("exhausted"):
+                            label += " ⚠️ budget exhausted"
+                        st.progress(pct, text=label)
                     if tool_calls:
                         with st.expander(f"Tool calls ({len(tool_calls)})"):
                             st.json(tool_calls)
+
                     st.session_state.chat.append({
                         "role": "assistant",
                         "content": answer,
                         "tool_calls": tool_calls,
+                        "spend": spend,
                     })
                 except Exception as e:
                     err = f"Agent error: {e}"
