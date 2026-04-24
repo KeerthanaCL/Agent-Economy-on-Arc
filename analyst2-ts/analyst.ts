@@ -1,16 +1,15 @@
 /**
- * Analyst Agent — a paid x402 service that itself pays downstream APIs.
+ * Analyst B — the "premium" competing analyst.
  *
- * This is the agent-to-agent loop: the research agent (on :9000) pays THIS
- * agent $0.02 per /synthesis call. This agent then pays the base APIs
- * (:8000) for price + sentiment + news, and uses Gemini to synthesize a
- * one-paragraph analyst report.
+ * Identical structure to analyst-ts (Analyst A), but:
+ *   - Listens on port 8002 (not 8001)
+ *   - Runs a different LLM (ANALYST_B_MODEL, default gpt-4o-mini via AI/ML API)
+ *   - Charges a different price (ANALYST_B_PRICE, default $0.030)
+ *   - Is marketed as "premium, more detailed" in the /synthesis response
  *
- *   Research agent  ──$0.02──▶  Analyst agent  ──$0.008──▶  3 base APIs
- *                                 (margin: $0.012)
- *
- * Every downstream settlement is logged with caller="analyst" so the
- * Streamlit UI shows the full 2-hop value chain.
+ * The research agent picks between Analyst A and Analyst B by
+ * trust_score / price on each request, creating a real reputation-gated
+ * marketplace — not just a fixed vendor.
  */
 import { getAgentPrivateKey, required } from "./env.js";
 import path from "node:path";
@@ -25,27 +24,22 @@ const TX_LOG = path.resolve(__dirname, "..", "tx_log.jsonl");
 
 const NETWORK = process.env.ARC_NETWORK ?? "eip155:5042002";
 const FACILITATOR_URL = process.env.FACILITATOR_URL ?? "https://gateway-api-testnet.circle.com";
-const PORT = Number(process.env.ANALYST_PORT ?? 8001);
+const PORT = Number(process.env.ANALYST_B_PORT ?? 8002);
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
-const MODEL = process.env.ANALYST_MODEL ?? "claude-3-5-haiku-20241022";
-const NAME = process.env.ANALYST_A_NAME ?? "gemini";
-const PRICE = process.env.ANALYST_A_PRICE_USD ?? "0.020";
+const MODEL = process.env.ANALYST_B_MODEL ?? "gpt-4o-mini";
+const PRICE = process.env.ANALYST_B_PRICE_USD ?? "0.030";
+const NAME = process.env.ANALYST_B_NAME ?? "premium";
 const AIML_BASE = "https://api.aimlapi.com/v1/chat/completions";
 
-const MERCHANT_ANALYST = required("MERCHANT_ANALYST_ADDRESS") as `0x${string}`;
+const MERCHANT = required("MERCHANT_ANALYST_B_ADDRESS") as `0x${string}`;
 const AIML_API_KEY = required("AIML_API_KEY");
 
-// The analyst both RECEIVES and SENDS — shares the agent's Gateway balance
-// for downstream payments so we don't need a second funded wallet.
 const buyer = new GatewayClient({
   chain: "arcTestnet",
   privateKey: getAgentPrivateKey(),
   rpcUrl: process.env.ARC_RPC_URL,
 });
 
-// Claude via AI/ML API (OpenAI-compatible) — runs on a DIFFERENT model family
-// than the research agent (Gemini), which turns the /synthesis handshake into
-// a true cross-provider agent-to-agent commerce loop.
 async function llmSynthesize(prompt: string): Promise<string> {
   const r = await fetch(AIML_BASE, {
     method: "POST",
@@ -56,7 +50,7 @@ async function llmSynthesize(prompt: string): Promise<string> {
     body: JSON.stringify({
       model: MODEL,
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 300,
+      max_tokens: 400,
     }),
   });
   if (!r.ok) {
@@ -68,7 +62,7 @@ async function llmSynthesize(prompt: string): Promise<string> {
 }
 
 const gateway = createGatewayMiddleware({
-  sellerAddress: MERCHANT_ANALYST,
+  sellerAddress: MERCHANT,
   networks: [NETWORK],
   facilitatorUrl: FACILITATOR_URL,
 });
@@ -105,15 +99,17 @@ async function synthesize(ticker: string) {
   const [price, sent, news] = await Promise.all([
     paidGet("/price", { ticker }),
     paidGet("/sentiment", { topic: ticker }),
-    paidGet("/news", { query: ticker, limit: 3 }),
+    paidGet("/news", { query: ticker, limit: 5 }),   // premium: more headlines
   ]);
 
-  const prompt = `You are a concise financial analyst. Given:
+  const prompt = `You are a PREMIUM senior financial analyst known for thorough,
+nuanced reports. Given:
 PRICE: ${JSON.stringify(price)}
 SENTIMENT: ${JSON.stringify(sent)}
 NEWS: ${JSON.stringify(news)}
 
-Write a 2-3 sentence analyst note on ${ticker}. Be specific — cite numbers.
+Write a detailed 4-5 sentence analyst note on ${ticker} that covers: price
+level, momentum from sentiment, and the 1-2 most significant news items.
 End with a single-word rating on its own line: BULLISH, NEUTRAL, or BEARISH.`;
 
   const report = await llmSynthesize(prompt);
@@ -132,9 +128,9 @@ const app = express();
 
 app.get("/", (_req, res) => {
   res.json({
-    service: `Analyst A (${NAME}) — paid synthesis over paid APIs`,
+    service: `Analyst B (${NAME}) — premium synthesis`,
     network: NETWORK,
-    merchant: MERCHANT_ANALYST,
+    merchant: MERCHANT,
     endpoints: { "/synthesis": `$${PRICE} per call` },
     model: MODEL,
   });
@@ -150,15 +146,15 @@ app.get("/synthesis", gateway.require(`$${PRICE}`), async (req: Request, res: Re
       settlement_tx: (req as any).payment?.transaction,
     });
   } catch (e: any) {
-    console.error("[/synthesis] error:", e);
+    console.error(`[/synthesis ${NAME}] error:`, e);
     res.status(500).json({ error: e.message ?? String(e) });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`[ok] Analyst A (${NAME}) listening on http://localhost:${PORT}`);
+  console.log(`[ok] Analyst B (${NAME}) listening on http://localhost:${PORT}`);
   console.log(`     Price:           $${PRICE} per synthesis`);
-  console.log(`     Merchant wallet: ${MERCHANT_ANALYST}`);
+  console.log(`     Merchant wallet: ${MERCHANT}`);
   console.log(`     Downstream API:  ${API_BASE}`);
   console.log(`     Buyer wallet:    ${buyer.address}`);
   console.log(`     LLM:             ${MODEL}  (via AI/ML API)`);

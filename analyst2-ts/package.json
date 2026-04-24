@@ -1,0 +1,25 @@
+{
+  "name": "agent-research-desk-analyst2",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Premium analyst agent (competes with analyst-ts) — paid x402 service that pays downstream.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch analyst.ts",
+    "start": "tsx analyst.ts"
+  },
+  "dependencies": {
+    "@circle-fin/x402-batching": "^3.0.2",
+    "@x402/core": "^2.3.0",
+    "@x402/evm": "^2.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

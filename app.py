@@ -77,9 +77,10 @@ def trust_color(score: int) -> str:
 
 st.title("Agent Research Desk")
 st.caption(
-    "Cross-provider agent economy on Arc testnet. Research agent (GPT-4o-mini) "
-    "pays Analyst agent (Gemini 2.5 Flash) $0.02 per synthesis; analyst pays "
-    "$0.008 to raw APIs. All settled in USDC via Circle Gateway nanopayments."
+    "Cross-provider agent marketplace on Arc testnet. Research agent "
+    "(GPT-4o-mini) picks between two competing analyst agents (Gemini 2.5 "
+    "Flash $0.020 · GPT-4o-mini $0.030) by trust-score-per-USD. All settled "
+    "in USDC via Circle Gateway nanopayments."
 )
 
 left, right = st.columns([0.6, 0.4], gap="large")
@@ -109,9 +110,10 @@ with right:
             })
         st.dataframe(rows, hide_index=True, use_container_width=True)
         st.caption(
-            "Each paid response is sanity-checked (e.g. `/price` must be in "
-            "$0.01–$1M; `/sentiment` in [-1,1]). Violations drop that "
-            "endpoint's score by 10; clean calls slowly rebuild it."
+            "Each paid response is sanity-checked. Violations drop the score "
+            "by 10; clean calls slowly rebuild it. The research agent picks "
+            "between `/synthesis@gemini` ($0.02) and `/synthesis@premium` "
+            "($0.03) by **trust / price** — highest score wins."
         )
 
     st.subheader("On-chain payment log")
@@ -122,9 +124,11 @@ with right:
             tx_hash = tx.get("tx_hash", "")
             link = f"[{tx_hash[:10]}…]({ARC_EXPLORER}{tx_hash})" if tx_hash else "(pending)"
             caller = tx.get("caller", "research")
-            badge = "🤖→🔬" if caller == "analyst" else "👤→🤖"
+            provider = tx.get("provider", "")
+            badge = "🤖→🔬" if caller.startswith("analyst") else "👤→🤖"
+            provider_tag = f" → **{provider}**" if provider else ""
             st.markdown(
-                f"{badge} **{tx['ts']}** · `{tx['path']}` · **{tx['price']}** · {link}  \n"
+                f"{badge} **{tx['ts']}** · `{tx['path']}`{provider_tag} · **{tx['price']}** · {link}  \n"
                 f"<span style='color:#888'>caller: {caller} · params: {tx.get('params', {})}</span>",
                 unsafe_allow_html=True,
             )
