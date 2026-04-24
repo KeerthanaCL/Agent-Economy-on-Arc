@@ -2,13 +2,15 @@
  * Research agent that pays per API call in USDC on Arc, with:
  *   - Budget guardrail: max spend per user question (env MAX_SPEND_USD).
  *   - Trust scoring: every paid response is sanity-checked; bad responses
- *     decay that endpoint's reputation, persisted to ../trust.json so the
- *     Streamlit UI and future sessions can observe it.
+ *     decay that endpoint's reputation, persisted to ../trust.json.
+ *   - Analyst marketplace: two competing analyst services (A on :8001 and
+ *     B on :8002) run different LLMs at different prices. The research
+ *     agent picks between them by (trust_score / price) on each call —
+ *     a real reputation-gated marketplace, not a fixed vendor.
  *
  * Uses AI/ML API (OpenAI-compatible) with function calling to route user
- * questions to paid tools. Each tool invocation is a sub-cent USDC nanopayment
- * settled on Arc via Circle Gateway. Some tools (get_deep_analysis) trigger
- * a second-hop agent-to-agent payment to the Analyst service on :8001.
+ * questions to paid tools. Each tool invocation is a sub-cent USDC
+ * nanopayment settled on Arc via Circle Gateway.
  */
 import { getAgentPrivateKey, required } from "./env.js";
 import path from "node:path";
@@ -23,7 +25,6 @@ const TRUST_FILE = path.resolve(__dirname, "..", "trust.json");
 
 const AIML_API_KEY = required("AIML_API_KEY");
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
-const ANALYST_BASE = process.env.ANALYST_BASE_URL ?? "http://localhost:8001";
 const NETWORK = process.env.ARC_NETWORK ?? "eip155:5042002";
 const PORT = Number(process.env.AGENT_PORT ?? 9000);
 const MODEL = process.env.RESEARCH_MODEL ?? "gpt-4o-mini";
@@ -36,19 +37,61 @@ const gateway = new GatewayClient({
   rpcUrl: process.env.ARC_RPC_URL,
 });
 
-const PRICES_USD: Record<string, number> = {
+const RAW_PRICES_USD: Record<string, number> = {
   "/price": 0.001,
   "/sentiment": 0.002,
   "/news": 0.005,
-  "/synthesis": 0.020,
 };
+
+// ───────── Analyst marketplace ─────────────────────────────────────────────
+
+interface AnalystProvider {
+  name: string;
+  url: string;
+  priceUsd: number;
+  model: string;
+}
+
+const ANALYSTS: AnalystProvider[] = [
+  {
+    name: process.env.ANALYST_A_NAME ?? "gemini",
+    url: process.env.ANALYST_A_URL ?? "http://localhost:8001",
+    priceUsd: Number(process.env.ANALYST_A_PRICE_USD ?? "0.020"),
+    model: process.env.ANALYST_MODEL ?? "google/gemini-2.5-flash",
+  },
+  {
+    name: process.env.ANALYST_B_NAME ?? "premium",
+    url: process.env.ANALYST_B_URL ?? "http://localhost:8002",
+    priceUsd: Number(process.env.ANALYST_B_PRICE_USD ?? "0.030"),
+    model: process.env.ANALYST_B_MODEL ?? "gpt-4o-mini",
+  },
+];
+
+function analystTrustKey(name: string): string {
+  return `/synthesis@${name}`;
+}
+
+/** Pick the analyst with highest trust-per-price that fits the remaining budget. */
+function pickAnalyst(budgetRemaining: number): (AnalystProvider & { trust: number; score: number }) | null {
+  const trust = loadTrust();
+  const affordable = ANALYSTS
+    .filter(a => a.priceUsd <= budgetRemaining + 1e-9)
+    .map(a => {
+      const t = trust[analystTrustKey(a.name)]?.score ?? 100;
+      const score = t / (a.priceUsd * 1000);  // trust points per milli-USD
+      return { ...a, trust: t, score };
+    });
+  if (affordable.length === 0) return null;
+  affordable.sort((a, b) => b.score - a.score);
+  return affordable[0];
+}
 
 // ───────── Trust store ─────────────────────────────────────────────────────
 
 interface TrustEntry {
   score: number;          // 0..100
-  calls: number;          // total calls observed
-  violations: number;     // total sanity-check failures
+  calls: number;
+  violations: number;
   last_violation?: string;
   last_checked: string;
 }
@@ -77,8 +120,9 @@ function ensureTrust(store: TrustStore, endpoint: string): TrustEntry {
 
 /** Return a reason string if the response fails the sanity rule, or null if OK. */
 function sanityCheck(endpoint: string, response: any): string | null {
+  const pathOnly = endpoint.split("@")[0];  // strip "@gemini" etc.
   try {
-    switch (endpoint) {
+    switch (pathOnly) {
       case "/price": {
         const p = Number(response?.price_usd);
         if (!isFinite(p) || p <= 0.01 || p > 1_000_000) return `price_usd out of range: ${p}`;
@@ -119,7 +163,6 @@ function updateTrust(endpoint: string, response: any) {
     entry.last_violation = violation;
     entry.score = Math.max(0, entry.score - 10);
   } else {
-    // Slow recovery: +1 per 5 clean calls, capped at 100.
     if (entry.calls % 5 === 0) entry.score = Math.min(100, entry.score + 1);
   }
   saveTrust(store);
@@ -127,10 +170,17 @@ function updateTrust(endpoint: string, response: any) {
 
 // ───────── Paid endpoint wrapper ───────────────────────────────────────────
 
+interface PaidOpts {
+  trustKey?: string;    // override key for trust store (used for analyst providers)
+  priceUsd?: number;    // override price (for dynamic-priced paths like /synthesis)
+  provider?: string;    // tag for the tx log
+}
+
 async function callPaidEndpoint(
   baseUrl: string,
   pathName: string,
   params: Record<string, unknown>,
+  opts: PaidOpts = {},
 ) {
   const qs = new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)])
@@ -140,13 +190,15 @@ async function callPaidEndpoint(
 
   const result = await gateway.pay(url);
   const data = result.data as any;
+  const priceUsd = opts.priceUsd ?? RAW_PRICES_USD[pathName] ?? 0;
 
   appendFileSync(TX_LOG, JSON.stringify({
     ts: new Date().toISOString(),
     caller: "research",
     path: pathName,
+    provider: opts.provider ?? "",
     params,
-    price: `$${(PRICES_USD[pathName] ?? 0).toFixed(3)}`,
+    price: `$${priceUsd.toFixed(3)}`,
     tx_hash: result.transaction,
     amount_atomic: result.amount.toString(),
     network: NETWORK,
@@ -154,7 +206,7 @@ async function callPaidEndpoint(
     latency_ms: Date.now() - t0,
   }) + "\n");
 
-  updateTrust(pathName, data);
+  updateTrust(opts.trustKey ?? pathName, data);
   return data;
 }
 
@@ -166,20 +218,21 @@ For every user question, decide which paid tools to call (if any). Each tool
 call costs real USDC, settled on Arc testnet via Circle Gateway nanopayments.
 You operate with a strict spend budget per question (see "BUDGET:" line
 below). Keep calls purposeful. If a tool response includes
-{ "error": "budget_exhausted" }, you MUST stop calling tools and answer
-with whatever data you've already collected.
+{ "error": "budget_exhausted" } or { "error": "no_affordable_analyst" }, you
+MUST stop calling tools and answer with whatever data you've already
+collected.
 
 Tool choice guide:
 - For a quick factual answer (current price, one sentiment score, a few
   headlines): call the raw tools (get_price / get_sentiment / get_news).
 - For a *deep analysis* or *analyst report* request (multiple aspects, a
-  recommendation, a rating): call get_deep_analysis. It pays a specialist
-  analyst agent (runs on a different foundation model) which fans out to the
-  raw APIs — one $0.02 call can be cheaper than stitching three raw calls.
+  recommendation, a rating): call get_deep_analysis. The system will
+  automatically pick the best Analyst Agent from a marketplace of competing
+  providers (trust score × price). The response tells you which analyst was
+  chosen and its trust level — cite that if relevant.
 
 After gathering data, give a concise, cited answer. Reference specific
-numbers from tool results. If the budget is exhausted, clearly state which
-aspects you could cover and which you had to skip.`;
+numbers from tool results.`;
 
 const TOOLS = [
   {
@@ -226,8 +279,9 @@ const TOOLS = [
     function: {
       name: "get_deep_analysis",
       description:
-        "Pay a specialist Analyst Agent (runs on a different foundation model) " +
-        "for a full synthesized report on a ticker. Cost: $0.02.",
+        "Pay an Analyst Agent for a full synthesized report on a ticker. Cost " +
+        "varies by provider ($0.02–$0.03). The system picks the best analyst " +
+        "from a marketplace of competing providers by trust × price.",
       parameters: {
         type: "object",
         properties: { ticker: { type: "string", description: "e.g. BTC, ETH" } },
@@ -236,26 +290,6 @@ const TOOLS = [
     },
   },
 ];
-
-function endpointFor(toolName: string): { base: string; path: string } {
-  switch (toolName) {
-    case "get_price": return { base: API_BASE, path: "/price" };
-    case "get_sentiment": return { base: API_BASE, path: "/sentiment" };
-    case "get_news": return { base: API_BASE, path: "/news" };
-    case "get_deep_analysis": return { base: ANALYST_BASE, path: "/synthesis" };
-    default: throw new Error(`Unknown tool: ${toolName}`);
-  }
-}
-
-function argsFor(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
-  switch (toolName) {
-    case "get_price": return { ticker: args.ticker };
-    case "get_sentiment": return { topic: args.topic };
-    case "get_news": return { query: args.query, limit: args.limit ?? 3 };
-    case "get_deep_analysis": return { ticker: args.ticker };
-    default: return {};
-  }
-}
 
 // ───────── Chat loop ──────────────────────────────────────────────────────
 
@@ -338,20 +372,56 @@ async function ask(question: string): Promise<AskResult> {
 
       let result: unknown;
       try {
-        const { base, path: p } = endpointFor(name);
-        const cost = PRICES_USD[p] ?? 0;
-
-        if (totalSpent + cost > MAX_SPEND_USD + 1e-9) {
-          exhausted = true;
-          result = {
-            error: "budget_exhausted",
-            message: `Skipping ${name}: would spend $${(totalSpent + cost).toFixed(3)}, over budget $${MAX_SPEND_USD.toFixed(3)}`,
-            spent_so_far: Number(totalSpent.toFixed(6)),
-            budget: MAX_SPEND_USD,
-          };
+        if (name === "get_deep_analysis") {
+          const remaining = MAX_SPEND_USD - totalSpent;
+          const picked = pickAnalyst(remaining);
+          if (!picked) {
+            exhausted = true;
+            result = {
+              error: "no_affordable_analyst",
+              message: `No analyst fits the remaining budget $${remaining.toFixed(3)}`,
+              spent_so_far: Number(totalSpent.toFixed(6)),
+              budget: MAX_SPEND_USD,
+            };
+          } else {
+            const data = await callPaidEndpoint(
+              picked.url,
+              "/synthesis",
+              { ticker: String(args.ticker ?? "BTC") },
+              { provider: picked.name, priceUsd: picked.priceUsd, trustKey: analystTrustKey(picked.name) },
+            );
+            totalSpent += picked.priceUsd;
+            result = {
+              ...data,
+              _market: {
+                picked: picked.name,
+                model: picked.model,
+                trust_score: picked.trust,
+                price_usd: picked.priceUsd,
+                competitors_considered: ANALYSTS.length,
+              },
+            };
+          }
         } else {
-          result = await callPaidEndpoint(base, p, argsFor(name, args));
-          totalSpent += cost;
+          const path = `/${name.replace("get_", "")}`;
+          const cost = RAW_PRICES_USD[path] ?? 0;
+          if (totalSpent + cost > MAX_SPEND_USD + 1e-9) {
+            exhausted = true;
+            result = {
+              error: "budget_exhausted",
+              message: `Skipping ${name}: would spend $${(totalSpent + cost).toFixed(3)}, over budget $${MAX_SPEND_USD.toFixed(3)}`,
+              spent_so_far: Number(totalSpent.toFixed(6)),
+              budget: MAX_SPEND_USD,
+            };
+          } else {
+            const params =
+              name === "get_price" ? { ticker: args.ticker } :
+              name === "get_sentiment" ? { topic: args.topic } :
+              name === "get_news" ? { query: args.query, limit: args.limit ?? 3 } :
+              {};
+            result = await callPaidEndpoint(API_BASE, path, params);
+            totalSpent += cost;
+          }
         }
       } catch (e: any) {
         result = { error: e.message ?? String(e) };
@@ -390,7 +460,7 @@ app.get("/health", (_req, res) => {
     agent: gateway.address,
     network: NETWORK,
     api_base: API_BASE,
-    analyst_base: ANALYST_BASE,
+    analysts: ANALYSTS,
     model: MODEL,
     max_spend_usd: MAX_SPEND_USD,
   });
@@ -398,6 +468,16 @@ app.get("/health", (_req, res) => {
 
 app.get("/trust", (_req, res) => {
   res.json(loadTrust());
+});
+
+app.get("/analysts", (_req, res) => {
+  const trust = loadTrust();
+  res.json(ANALYSTS.map(a => ({
+    ...a,
+    trust_score: trust[analystTrustKey(a.name)]?.score ?? 100,
+    trust_calls: trust[analystTrustKey(a.name)]?.calls ?? 0,
+    violations: trust[analystTrustKey(a.name)]?.violations ?? 0,
+  })));
 });
 
 app.post("/ask", async (req: Request, res: Response) => {
@@ -419,9 +499,12 @@ app.listen(PORT, () => {
   console.log(`[ok] Research agent listening on http://localhost:${PORT}`);
   console.log(`     Agent wallet:   ${gateway.address}`);
   console.log(`     API base:       ${API_BASE}`);
-  console.log(`     Analyst base:   ${ANALYST_BASE}`);
   console.log(`     Model:          ${MODEL}  (via AI/ML API)`);
   console.log(`     Budget/question: $${MAX_SPEND_USD.toFixed(3)}`);
+  console.log(`     Analyst marketplace (${ANALYSTS.length} providers):`);
+  for (const a of ANALYSTS) {
+    console.log(`       - ${a.name}: $${a.priceUsd.toFixed(3)} @ ${a.url}  (${a.model})`);
+  }
   console.log(`     Tx log:         ${TX_LOG}`);
   console.log(`     Trust store:    ${TRUST_FILE}`);
 });
