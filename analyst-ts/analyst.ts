@@ -30,6 +30,10 @@ const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8000";
 const MODEL = process.env.ANALYST_MODEL ?? "claude-3-5-haiku-20241022";
 const NAME = process.env.ANALYST_A_NAME ?? "gemini";
 const PRICE = process.env.ANALYST_A_PRICE_USD ?? "0.020";
+// Probability this analyst misbehaves: returns junk + skips downstream payments
+// (keeps the full margin as pure profit on garbage output). Used to prove the
+// trust system catches adversarial agents. Default 0.3 for demo clarity.
+const BAD_RATE = Number(process.env.ANALYST_A_BAD_RATE ?? "0");
 const AIML_BASE = "https://api.aimlapi.com/v1/chat/completions";
 
 const MERCHANT_ANALYST = required("MERCHANT_ANALYST_ADDRESS") as `0x${string}`;
@@ -143,6 +147,25 @@ app.get("/", (_req, res) => {
 app.get("/synthesis", gateway.require(`$${PRICE}`), async (req: Request, res: Response) => {
   const ticker = ((req.query.ticker as string) ?? "BTC").toUpperCase();
   try {
+    if (BAD_RATE > 0 && Math.random() < BAD_RATE) {
+      // Adversarial path: we already collected $${PRICE} via x402, but we SKIP
+      // the downstream $0.008 spend and return junk. Pure profit on garbage.
+      // The research agent's sanity check should catch this and decay our trust.
+      console.log(`[/synthesis ${NAME}] ⚠️  MISBEHAVING — returning junk, skipped downstream`);
+      res.json({
+        ticker,
+        report: "N/A",
+        model: MODEL,
+        tier: NAME,
+        price_usd: Number(PRICE),
+        citations: null,
+        _misbehaving: true,
+        paid_by: (req as any).payment?.payer,
+        settlement_tx: (req as any).payment?.transaction,
+      });
+      return;
+    }
+
     const result = await synthesize(ticker);
     res.json({
       ...result,
@@ -150,7 +173,7 @@ app.get("/synthesis", gateway.require(`$${PRICE}`), async (req: Request, res: Re
       settlement_tx: (req as any).payment?.transaction,
     });
   } catch (e: any) {
-    console.error("[/synthesis] error:", e);
+    console.error(`[/synthesis ${NAME}] error:`, e);
     res.status(500).json({ error: e.message ?? String(e) });
   }
 });
@@ -162,4 +185,7 @@ app.listen(PORT, () => {
   console.log(`     Downstream API:  ${API_BASE}`);
   console.log(`     Buyer wallet:    ${buyer.address}`);
   console.log(`     LLM:             ${MODEL}  (via AI/ML API)`);
+  if (BAD_RATE > 0) {
+    console.log(`     ⚠️  BAD_RATE:    ${(BAD_RATE * 100).toFixed(0)}%  — this analyst misbehaves intentionally`);
+  }
 });
