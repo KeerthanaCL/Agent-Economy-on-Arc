@@ -511,4 +511,4 @@ These are the specific extensions we'd build to take this from a hackathon demo 
 
 ## Feedback
 
-See `FEEDBACK.md` — submitted for the $500 product feedback prize. Written from the perspective of a 24-hour solo build on Windows, including the specific friction points that cost us hours and the highest-leverage fixes Circle could ship.
+See `FEEDBACK.md`, written from the perspective of a 24-hour solo build on Windows, including the specific friction points that cost us hours and the highest-leverage fixes Circle could ship.
