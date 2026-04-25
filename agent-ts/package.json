@@ -10,7 +10,8 @@
     "deposit": "tsx deposit.ts",
     "balance": "tsx balance.ts",
     "seed": "tsx seed.ts",
-    "check": "tsx check_tx.ts"
+    "check": "tsx check_tx.ts",
+    "marketplace": "tsx marketplace_demo.ts"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.0.2",
