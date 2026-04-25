@@ -51,24 +51,31 @@ const buyer = new GatewayClient({
 // than the research agent (Gemini), which turns the /synthesis handshake into
 // a true cross-provider agent-to-agent commerce loop.
 async function llmSynthesize(prompt: string): Promise<string> {
-  const r = await fetch(AIML_BASE, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${AIML_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 300,
-    }),
+  const body = JSON.stringify({
+    model: MODEL,
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 300,
   });
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`AI/ML API ${r.status}: ${body.slice(0, 200)}`);
+  let lastErr = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      console.log(`[${NAME} synth] retrying (attempt ${attempt + 1}/3)…`);
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
+    const r = await fetch(AIML_BASE, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${AIML_API_KEY}`, "Content-Type": "application/json" },
+      body,
+    });
+    if (r.ok) {
+      const data = await r.json() as any;
+      return data.choices?.[0]?.message?.content ?? "(no synthesis)";
+    }
+    const text = await r.text().catch(() => "");
+    lastErr = `AI/ML API ${r.status}: ${text.slice(0, 200)}`;
+    if (r.status < 500) throw new Error(lastErr);
   }
-  const data = await r.json() as any;
-  return data.choices?.[0]?.message?.content ?? "(no synthesis)";
+  throw new Error(lastErr);
 }
 
 const gateway = createGatewayMiddleware({

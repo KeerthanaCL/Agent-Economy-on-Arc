@@ -22,7 +22,7 @@ AGENT_URL = os.environ.get("AGENT_URL", "http://localhost:9000")
 ROOT = Path(__file__).resolve().parent
 TX_LOG_PATH = ROOT / "tx_log.jsonl"
 TRUST_PATH = ROOT / "trust.json"
-ARC_EXPLORER = "https://explorer.testnet.arc.network/tx/"
+ARC_EXPLORER = "https://testnet.arcscan.app/tx/"
 
 st.set_page_config(page_title="Agent Research Desk — Arc", layout="wide")
 

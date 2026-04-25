@@ -291,7 +291,7 @@ The recovery rate (+1 per 5 clean calls) is deliberately slow — once trust is 
 | Real per-action pricing ≤ $0.01 | `$0.001` (price), `$0.002` (sentiment), `$0.005` (news) — all sub-cent. Analysts at `$0.020` / `$0.030` aggregate sub-cent components. |
 | 50+ on-chain settlements | `npm run seed -- 60` fires 60 paid calls; tx hashes appended to `tx_log.jsonl`. The `marketplace_demo` adds another ~80 (20 user calls × 4 settlements each). |
 | Margin explanation | See "Why this can only exist on Arc + Nanopayments" earlier and the Stripe-vs-Arc table. Analyst margin per call: $0.020 in − $0.008 out = $0.012 (60% margin), all sub-cent. |
-| Settles on Arc | `ARC_NETWORK=eip155:5042002` confirmed on every tx. Tx hashes linkable on `https://explorer.testnet.arc.network`. |
+| Settles on Arc | `ARC_NETWORK=eip155:5042002` confirmed on every tx. Tx hashes linkable on `https://testnet.arcscan.app`. |
 | Uses USDC | Sole payment asset. USDC is the native gas token on Arc, so no separate gas funding needed. |
 | Uses Circle Nanopayments | `@circle-fin/x402-batching` (server middleware + `GatewayClient` buyer) for every payment. Facilitator at `gateway-api-testnet.circle.com`. |
 | Gemini partner challenge | `google/gemini-2.5-flash` powers Analyst A's synthesis, routed via AI/ML API. |
@@ -444,7 +444,7 @@ The research agent's startup log will show the marketplace registry. Analyst A's
 cd agent-ts
 npm run seed -- 60
 ```
-Fires 60 raw paid calls (no LLM, no quota concerns) in a loop. ~3 minutes. Each settles on Arc; hashes appended to `tx_log.jsonl`. Inspect them with `npm run check -- 0x<hash>` or visit `https://explorer.testnet.arc.network/tx/<hash>`.
+Fires 60 raw paid calls (no LLM, no quota concerns) in a loop. ~3 minutes. Each settles on Arc; hashes appended to `tx_log.jsonl`. Inspect them with `npm run check -- 0x<hash>` or visit `https://testnet.arcscan.app/tx/<hash>`.
 
 ### The headline demo: live marketplace flip
 ```bash

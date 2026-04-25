@@ -308,26 +308,41 @@ interface Message {
 }
 
 async function chatCompletion(messages: Message[]): Promise<Message> {
-  const r = await fetch(AIML_BASE, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${AIML_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      tools: TOOLS,
-      tool_choice: "auto",
-      max_tokens: 600,
-    }),
+  const body = JSON.stringify({
+    model: MODEL,
+    messages,
+    tools: TOOLS,
+    tool_choice: "auto",
+    max_tokens: 600,
   });
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    throw new Error(`AI/ML API ${r.status}: ${body.slice(0, 2000)}`);
+
+  // Retry up to 2 times on transient 5xx (Cloudflare 524 timeouts, etc.)
+  let lastErr = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      console.log(`[chatCompletion] retrying (attempt ${attempt + 1}/3) after ${lastErr.slice(0, 80)}…`);
+      await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
+    const r = await fetch(AIML_BASE, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${AIML_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body,
+    });
+    if (r.ok) {
+      const data = await r.json() as any;
+      return data.choices?.[0]?.message as Message;
+    }
+    const text = await r.text().catch(() => "");
+    lastErr = `AI/ML API ${r.status}: ${text.slice(0, 200)}`;
+    if (r.status < 500) {
+      // 4xx is a real client error; don't retry
+      throw new Error(`AI/ML API ${r.status}: ${text.slice(0, 2000)}`);
+    }
   }
-  const data = await r.json() as any;
-  return data.choices?.[0]?.message as Message;
+  throw new Error(lastErr);
 }
 
 interface AskResult {
